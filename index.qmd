@@ -1,0 +1,184 @@
+---
+title: "EXAMEN_3"
+format: html
+editor: visual
+---
+
+# Project Setup
+
+```{r}
+#| label: setup
+
+source('https://inkaverse.com/setup.r')
+```
+
+# Data import
+
+```{r}
+gs4_deauth()
+
+gs <- "https://docs.google.com/spreadsheets/d/1VN0X6mcPoxDPoT_UZLsGFBOpOptBLTQxihEMyfP1n5I/edit?gid=706978554#gid=706978554"
+
+fb <- gs %>%
+  range_read(ss = ., sheet = "original") %>%
+  mutate(across(1, ~ as.factor(.)))
+
+fb %>% str()
+```
+
+```{r}
+gs4_deauth()
+
+fb_raw <- range_read(
+  ss = "https://docs.google.com/spreadsheets/d/1VN0X6mcPoxDPoT_UZLsGFBOpOptBLTQxihEMyfP1n5I/edit?gid=706978554#gid=706978554",
+  sheet = "original",
+  range = "A1:D19" ,
+  col_types = "c" 
+)
+  
+fb <- fb_raw %>%
+  rename(
+    tratamiento = 1,
+    bloque_I    = 2,
+    bloque_II   = 3,
+    bloque_III  = 4
+  ) %>%
+ 
+  filter(grepl("^P\\d", tratamiento)) %>%
+  pivot_longer(
+    cols = starts_with("bloque_"),
+    names_to = "block",
+    values_to = "brix"
+  ) %>%
+  mutate(
+   
+    brix  = as.numeric(gsub(",", ".", trimws(brix))),
+    block = as.factor(block),
+    P     = factor(str_extract(tratamiento, "P\\d")),
+    T     = factor(str_extract(tratamiento, "T\\d")),
+    t     = factor(str_extract(tratamiento, "t\\d"))
+  )
+av <- aov(brix ~ block + P * T, data = fb)
+anova(av)
+
+mc <- emmeans(av, ~ P * T) %>%
+  as.data.frame()
+
+mc
+
+plot_smr(mc,
+         type = "bar",
+         y = "emmean",
+         x = "P",
+         group = "T")
+```
+
+
+```{r}
+gs4_deauth()
+
+url <- "https://docs.google.com/spreadsheets/d/1VN0X6mcPoxDPoT_UZLsGFBOpOptBLTQxihEMyfP1n5I/edit?gid=706978554#gid=706978554"
+
+d_brix     <- range_read(url, sheet = "original", range = "A1:E19",  col_types = "c")
+d_ph       <- range_read(url, sheet = "original", range = "G1:K19",  col_types = "c")
+d_densidad <- range_read(url, sheet = "original", range = "M1:Q19",  col_types = "c")
+d_alcohol  <- range_read(url, sheet = "original", range = "S1:W19",  col_types = "c")
+d_acidez   <- range_read(url, sheet = "original", range = "Y1:AC19", col_types = "c")
+
+# Consolidar la matriz de datos con los factores y variables numéricas
+
+fb <- tibble(
+  tratamiento = d_brix[[1]],
+  P        = factor(str_extract(tratamiento, "P\\d")), # Proporción
+  T        = factor(str_extract(tratamiento, "T\\d")), # Temperatura
+  brix     = as.numeric(gsub(",", ".", trimws(d_brix[[5]]))),
+  ph       = as.numeric(gsub(",", ".", trimws(d_ph[[5]]))),
+  densidad = as.numeric(gsub(",", ".", trimws(d_densidad[[5]]))),
+  alcohol  = as.numeric(gsub(",", ".", trimws(d_alcohol[[5]]))),
+  acidez   = as.numeric(gsub(",", ".", trimws(d_acidez[[5]])))
+)
+
+# Preparar la tabla para PCA (agrupando y promediando por factores P y T)
+
+dtx <- fb %>%
+  dplyr::select(c("P", "T", "brix", "ph", "densidad", "alcohol", "acidez")) %>%
+  group_by(P, T) %>%
+  summarise(across(where(is.numeric), ~ mean(.x, na.rm = TRUE)), .groups = "drop") %>%
+  unite("rowname", c("P", "T"), remove = FALSE, sep = "-") %>%
+  column_to_rownames("rowname") %>%
+  as.data.frame()
+
+str(dtx)
+
+mv <- dtx %>%
+  PCA(
+    scale.unit = TRUE,
+    graph      = FALSE,
+    quali.sup  = c(1, 2)
+  )
+
+var <- mv %>%
+  plot.PCA(choix = c("var"), cex = 0.8)
+
+var
+
+cos <- mv %>%
+  factoextra::fviz_pca_var(
+    col.var       = "cos2",
+    gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+    repel         = TRUE,
+    labelsize     = 3.5
+  )
+
+cos
+
+ind <- mv %>%
+  plot.PCA(
+    choix     = c("ind"),
+    cex       = 0.8,
+    label     = "ind",
+    invisible = "quali",
+    habillage = 2   
+  )
+
+ind
+
+pcainfo <- factoextra::get_pca(mv)
+pcainfo
+
+pcainfo$cor     %>% kable(caption = "Correlación de las variables con las dimensiones", digits = 3)
+pcainfo$contrib %>% kable(caption = "Contribución de las variables (%)", digits = 2)
+pcainfo$cos2    %>% kable(caption = "Calidad de representación (Cos2)", digits = 3)
+
+
+cls <- mv %>% 
+  HCPC(nb.clust = -1, graph = FALSE)
+
+
+map <- \() { plot.HCPC(cls, choice = "map", draw.tree = FALSE) }
+
+
+map()
+
+cls$call$t$tree
+cls$data.clust %>% 
+  kable(caption = "Cluster membership of each individual")  
+cls$desc.var$quanti %>% 
+  kable(caption = "Quantitative variables characterizing each cluster")
+cls$desc.var$category%>% 
+  kable(caption = "Categorical variables significantly by cluster")  
+table(cls$data.clust$clust) %>% 
+  kable(caption = "Number of individuals assigned to each cluster")
+
+plot <- list(var, cos, ind, map) %>% 
+  plot_grid(plotlist = ., ncol = 2, labels = "auto") %>% 
+  ggsave(plot = ., "manuscript/multivariate.jpg", units = "cm"
+                , width = 30, height = 30)
+
+plot %>% include_graphics()
+```
+
+
+
+
+
